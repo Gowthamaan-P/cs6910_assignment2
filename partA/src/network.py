@@ -1,98 +1,100 @@
+import numpy as np
+import torch
 from torch import nn
 
 class CNN(nn.Module):
     def __init__(
         self,
-        in_channels: int,
+        input_dimension: tuple,
         number_of_filters: int,
         filter_size: tuple,
         stride: int,
         padding: int,
         max_pooling_size: tuple,
-        n_neurons: tuple,
+        n_neurons: int,
         n_classes: int,
         conv_activation: nn.Module,
         dense_activation: nn.Module,
+        dropout_rate: float,
+        use_batchnorm: bool,
+        factor: float,
+        dropout_organisation: int,
     ):
-        super().__init__()      
+        super().__init__()
         
-        self.conv1 = nn.Conv2d(
-            in_channels, number_of_filters, kernel_size=filter_size, stride=stride, padding=padding
-        )
-        self.c_act1 = conv_activation
-        self.pool1 = nn.MaxPool2d(kernel_size=max_pooling_size)
+        # Define convolutional blocks based on input parameters
 
-        self.conv2 = nn.Conv2d(
-            number_of_filters,
-            number_of_filters,
-            kernel_size=filter_size,
-            stride=stride,
-            padding=padding,
-        )
-        self.c_act2 = conv_activation
-        self.pool2 = nn.MaxPool2d(kernel_size=max_pooling_size)
+        self.conv_blocks = nn.ModuleList([])
+        in_c = input_dimension[0]
+        for i in range(0, 5):
+            add_dropout = i % dropout_organisation > 0  # Determine whether to add dropout
+            out_c = int((factor**i) * number_of_filters)  # Calculate number of output channels
+            if out_c <= 0:
+                out_c = 3  # Set minimum output channels to 3 if it goes below
+            # Create convolutional block
 
-        self.conv3 = nn.Conv2d(
-            number_of_filters,
-            number_of_filters,
-            kernel_size=filter_size,
-            stride=stride,
-            padding=padding,
-        )
-        self.c_act3 = conv_activation
-        self.pool3 = nn.MaxPool2d(kernel_size=max_pooling_size)
-
-        self.conv4 = nn.Conv2d(
-            number_of_filters,
-            number_of_filters,
-            kernel_size=filter_size,
-            stride=stride,
-            padding=padding,
-        )
-        self.c_act4 = conv_activation
-        self.pool4 = nn.MaxPool2d(kernel_size=max_pooling_size)
-
-        self.conv5 = nn.Conv2d(
-            number_of_filters,
-            number_of_filters,
-            kernel_size=filter_size,
-            stride=stride,
-            padding=padding,
-        )
-        self.c_act5 = conv_activation
-        self.pool5 = nn.MaxPool2d(kernel_size=max_pooling_size)
-
-        self.fc1 = nn.Linear(in_features=n_neurons[0], out_features=n_neurons[1])
-        self.d_act1 = dense_activation
-
-        self.fc2 = nn.Linear(in_features=n_neurons[1], out_features=n_classes)
-        self.logSoftmax = nn.LogSoftmax(dim=1)
-
-    @staticmethod
-    def forward(self, x):
-        r = self.conv1(x)
+            conv_block = self.create_conv_block(
+                in_c,
+                out_c,
+                filter_size,
+                max_pooling_size,
+                stride,
+                padding,
+                conv_activation,
+                dropout_rate,
+                use_batchnorm,
+                add_dropout,
+            )
+            self.conv_blocks.append(conv_block)  # Add the convolutional block to the list
+            in_c = out_c  # Update input channels for the next block
+        self.flatten = nn.Flatten()  # Flatten the output of convolutional layers
         
-        r = self.c_act1(r)
-        r = self.pool1(r)
+        # Determine the number of input features for the dense layers
 
-        r = self.conv2(r)
-        r = self.c_act2(r)
-        r = self.pool2(r)
+        r = torch.ones(1, *input_dimension)
+        for block in self.conv_blocks:
+            block.eval()
+            r = block(r)
+        in_features = int(np.prod(r.size()[1:]))  # Compute the total number of features
 
-        r = self.conv3(r)
-        r = self.c_act3(r)
-        r = self.pool3(r)
-        
-        r = self.conv4(r)
-        r = self.c_act4(r)
-        r = self.pool4(r)
+        # Define the dense block
 
-        r = self.conv5(r)
-        r = self.c_act5(r)
-        r = self.pool5(r)
-        
-        r = self.fc1(r)
-        r = self.d_act1(r)
+        self.dense_block1 = nn.Sequential(
+            nn.Linear(in_features=in_features, out_features=n_neurons),  # Dense layer
+            dense_activation,  # Activation function for the dense layer
+            nn.Linear(in_features=n_neurons, out_features=n_classes),  # Output layer
+            nn.LogSoftmax(dim=1),  # Log-softmax activation for classification
+        )
 
-        r = self.fc2(r)
-        return self.logSoftmax(r)
+    def create_conv_block(
+        in_c,
+        out_c,
+        kernel_size,
+        max_pooling_size,
+        stride,
+        padding,
+        conv_activation,
+        dropout_rate,
+        use_batchnorm,
+        add_dropout,
+    ):
+        layers = [
+            nn.Conv2d(
+                in_c, out_c, kernel_size=kernel_size, stride=stride, padding=padding
+            ),  # Convolutional layer
+            conv_activation,  # Activation function for convolutional layer
+        ]
+        if use_batchnorm:  # Optionally add batch normalization
+            layers.append(nn.BatchNorm2d(out_c))
+        layers.append(nn.MaxPool2d(kernel_size=max_pooling_size))  # Max pooling layer
+        if add_dropout:  # Optionally add dropout
+            layers.append(nn.Dropout(p=dropout_rate))
+        return nn.Sequential(*layers)  # Return the sequential block of layers
+
+    def __call__(self, x):
+        r = x
+        for block in self.conv_blocks:
+            r = block(r)  # Pass input through each convolutional block
+        r = self.flatten(r)  # Flatten the output
+        return self.dense_block1(r)
+  # Pass through dense layers for final output
